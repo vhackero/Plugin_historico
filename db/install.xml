@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<XMLDB PATH="local/versionamiento_de_aulas/db" VERSION="2026021201" COMMENT="Tablas para el versionamiento de aulas, optimizacion y trazabilidad">
+    <TABLES>
+        <TABLE NAME="local_ver_aulas_cola" COMMENT="Cola de tareas de respaldo">
+            <FIELDS>
+                <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true" COMMENT="ID unico"/>
+                <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="ID del docente"/>
+                <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="ID del curso"/>
+                <FIELD NAME="status" TYPE="char" LENGTH="50" NOTNULL="true" DEFAULT="pendiente" COMMENT="Estado: pendiente, procesando, finalizado, error, eliminado_baja_docente"/>
+                <FIELD NAME="backupfileid" TYPE="int" LENGTH="10" NOTNULL="false" COMMENT="Referencia al archivo MBZ en el storage de Moodle"/>
+                <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="Fecha de creacion del registro"/>
+                <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="false" COMMENT="Fecha de última modificación del registro"/>
+            </FIELDS>
+            <KEYS>
+                <KEY NAME="primary" TYPE="primary" FIELDS="id" COMMENT="Llave primaria"/>
+            </KEYS>
+        </TABLE>
+
+        <TABLE NAME="local_ver_aulas_logs" COMMENT="Registro historico de acciones para auditoria administrativa">
+            <FIELDS>
+                <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true" COMMENT="ID unico de log"/>
+                <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="Usuario que realizo la accion"/>
+                <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="Curso afectado"/>
+                <FIELD NAME="action" TYPE="char" LENGTH="50" NOTNULL="true" COMMENT="Tipo: respaldo_finalizado, restauracion_exitosa, limpieza_archivo"/>
+                <FIELD NAME="info" TYPE="text" NOTNULL="false" COMMENT="Detalles tecnicos o mensajes de error"/>
+                <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" COMMENT="Timestamp de la accion"/>
+            </FIELDS>
+            <KEYS>
+                <KEY NAME="primary" TYPE="primary" FIELDS="id" COMMENT="Llave primaria"/>
+            </KEYS>
+            <INDEXES>
+                <INDEX NAME="user_course_idx" UNIQUE="false" FIELDS="userid, courseid" COMMENT="Index para optimizar reportes administrativos"/>
+            </INDEXES>
+        </TABLE>
+    </TABLES>
+</XMLDB>
