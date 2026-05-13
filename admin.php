@@ -52,27 +52,36 @@ function local_versionamiento_de_aulas_get_course_teachers(int $courseid): strin
 }
 
 /**
- * Renderiza tabla simple de reporte (aula + docente).
+ * Exporta reporte a formato CSV compatible con Excel.
  */
-function local_versionamiento_de_aulas_render_report_table(string $title, array $rows): void {
-    echo "<div class='card shadow-sm mb-3'>";
-    echo "<div class='card-header font-weight-bold'>{$title}</div>";
-    echo "<div class='card-body p-0'>";
+function local_versionamiento_de_aulas_export_report_excel(string $reportkey, array $rows): void {
+    $titles = [
+        'finalizados' => 'respaldos_ejecutados',
+        'utilizadas' => 'aulas_utilizadas',
+        'pendientes' => 'solicitudes_pendientes',
+        'sin_solicitud' => 'aulas_periodo_pendientes_solicitud',
+    ];
 
-    if (empty($rows)) {
-        echo "<div class='p-3 text-muted'>Sin registros para este informe.</div>";
-        echo "</div></div>";
-        return;
+    if (!array_key_exists($reportkey, $titles)) {
+        throw new moodle_exception('invalidparameter', 'error');
     }
 
-    echo "<div class='table-responsive'><table class='table table-sm table-hover mb-0'>";
-    echo "<thead class='thead-light'><tr><th>Aula</th><th>Docente(s)</th></tr></thead><tbody>";
+    $filename = $titles[$reportkey] . '_' . date('Ymd_His') . '.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    $output = fopen('php://output', 'w');
+    fwrite($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+    fputcsv($output, ['Aula', 'Docente(s)']);
+
     foreach ($rows as $row) {
-        $coursename = s($row['course']);
-        $teachers = s($row['teachers']);
-        echo "<tr><td>{$coursename}</td><td>{$teachers}</td></tr>";
+        fputcsv($output, [$row['course'], $row['teachers']]);
     }
-    echo "</tbody></table></div></div></div>";
+
+    fclose($output);
+    exit;
 }
 
 // --- Construcción de métricas e informes ---
@@ -147,6 +156,23 @@ foreach ($periodcourses as $course) {
     ];
 }
 
+
+$exportreport = optional_param('export_report', '', PARAM_ALPHAEXT);
+if (!empty($exportreport)) {
+    $allowedreports = [
+        'finalizados' => $finalizadosreport,
+        'utilizadas' => $utilizadasreport,
+        'pendientes' => $pendientesreport,
+        'sin_solicitud' => $pendingrequestreport,
+    ];
+
+    if (!array_key_exists($exportreport, $allowedreports)) {
+        throw new moodle_exception('invalidparameter', 'error');
+    }
+
+    local_versionamiento_de_aulas_export_report_excel($exportreport, $allowedreports[$exportreport]);
+}
+
 echo $OUTPUT->header();
 
 echo "
@@ -196,12 +222,25 @@ echo "
         </div>
     </div>";
 
-// --- Informes solicitados ---
-echo "<h4 class='mb-3'>Informes del tablero</h4>";
-local_versionamiento_de_aulas_render_report_table('RESPALDOS EJECUTADOS: Aulas y docente', $finalizadosreport);
-local_versionamiento_de_aulas_render_report_table('AULAS UTILIZADAS: Aulas y docente', $utilizadasreport);
-local_versionamiento_de_aulas_render_report_table('SOLICITUDES PENDIENTES: Aulas y docente', $pendientesreport);
-local_versionamiento_de_aulas_render_report_table('TOTAL DE AULAS DEL PERIODO (PENDIENTES DE SOLICITUD): Aulas y docente', $pendingrequestreport);
+// --- Exportador de informes ---
+echo "
+<div class='card shadow-sm mb-4'>
+  <div class='card-body'>
+    <h5 class='mb-3'>Descargar reportes en Excel</h5>
+    <form method='get' action='{$PAGE->url}' class='form-inline'>
+      <label for='export_report' class='mr-2 font-weight-bold mb-2'>Seleccione reporte:</label>
+      <select id='export_report' name='export_report' class='form-control mr-2 mb-2' required>
+        <option value=''>-- Seleccione --</option>
+        <option value='finalizados'>RESPALDOS EJECUTADOS</option>
+        <option value='utilizadas'>AULAS UTILIZADAS</option>
+        <option value='pendientes'>SOLICITUDES PENDIENTES</option>
+        <option value='sin_solicitud'>TOTAL DE AULAS DEL PERIODO (PENDIENTES DE SOLICITUD)</option>
+      </select>
+      <button type='submit' class='btn btn-success mb-2'>Descargar Excel</button>
+    </form>
+  </div>
+</div>";
+
 
 // --- 2. FILTROS ---
 echo "
