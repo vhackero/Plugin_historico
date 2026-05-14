@@ -19,13 +19,161 @@ $PAGE->set_context(context_system::instance());
 $PAGE->set_title("Dashboard de Versionamiento");
 $PAGE->set_heading("Panel de Control: Versionamiento de Aulas");
 
-echo $OUTPUT->header();
+/**
+ * Obtiene docentes de un curso en formato legible.
+ */
+function local_versionamiento_de_aulas_get_course_teachers(int $courseid): string {
+    global $DB;
 
-// --- 1. MÉTRICAS ---
-$archivos   = $DB->count_records('local_ver_aulas_cola', ['status' => 'finalizado']);
+    $sql = "SELECT DISTINCT u.id, u.firstname, u.lastname
+              FROM {context} ctx
+              JOIN {role_assignments} ra ON ra.contextid = ctx.id
+              JOIN {user} u ON u.id = ra.userid
+             WHERE ctx.contextlevel = :contextlevel
+               AND ctx.instanceid = :courseid
+               AND ra.roleid IN (
+                    SELECT id FROM {role} WHERE shortname IN ('editingteacher', 'teacher')
+               )
+          ORDER BY u.lastname, u.firstname";
+    $records = $DB->get_records_sql($sql, [
+        'contextlevel' => CONTEXT_COURSE,
+        'courseid' => $courseid,
+    ]);
+
+    if (empty($records)) {
+        return 'Sin docente asignado';
+    }
+
+    $names = [];
+    foreach ($records as $r) {
+        $names[] = fullname($r);
+    }
+    return implode(', ', $names);
+}
+
+/**
+ * Exporta reporte a formato CSV compatible con Excel.
+ */
+function local_versionamiento_de_aulas_export_report_excel(string $reportkey, array $rows): void {
+    $titles = [
+        'finalizados' => 'respaldos_ejecutados',
+        'utilizadas' => 'aulas_utilizadas',
+        'pendientes' => 'solicitudes_pendientes',
+        'sin_solicitud' => 'aulas_periodo_pendientes_solicitud',
+    ];
+
+    if (!array_key_exists($reportkey, $titles)) {
+        throw new moodle_exception('invalidparameter', 'error');
+    }
+
+    $filename = $titles[$reportkey] . '_' . date('Ymd_His') . '.csv';
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    $output = fopen('php://output', 'w');
+    fwrite($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+    fputcsv($output, ['Aula', 'Docente(s)']);
+
+    foreach ($rows as $row) {
+        fputcsv($output, [$row['course'], $row['teachers']]);
+    }
+
+    fclose($output);
+    exit;
+}
+
+// --- Construcción de métricas e informes ---
+$archivos = $DB->count_records('local_ver_aulas_cola', ['status' => 'finalizado']);
 $pendientes = $DB->count_records('local_ver_aulas_cola', ['status' => 'pendiente']);
 $logs_count = (int)$DB->count_records_select('local_ver_aulas_logs', "action IN ('fusion_exitosa', 'course_merged')");
-$url_cola   = new moodle_url('/local/versionamiento_de_aulas/admin_tasks.php');
+$url_cola = new moodle_url('/local/versionamiento_de_aulas/admin_tasks.php');
+
+$finalizados = $DB->get_records('local_ver_aulas_cola', ['status' => 'finalizado'], 'timemodified DESC', 'courseid, userid');
+$solicitudes = $DB->get_records('local_ver_aulas_cola', ['status' => 'pendiente'], 'timecreated DESC', 'courseid, userid');
+$utilizadas = $DB->get_records_select('local_ver_aulas_logs', "action IN ('fusion_exitosa', 'course_merged')", [], 'timecreated DESC', 'courseid, userid');
+
+$finalizadosreport = [];
+$pendientesreport = [];
+$utilizadasreport = [];
+$courseswithrequests = [];
+
+foreach ($finalizados as $row) {
+    if (!$course = $DB->get_record('course', ['id' => $row->courseid], 'id, fullname', IGNORE_MISSING)) {
+        continue;
+    }
+    $courseswithrequests[$course->id] = true;
+    $finalizadosreport[] = [
+        'course' => $course->fullname,
+        'teachers' => local_versionamiento_de_aulas_get_course_teachers((int)$course->id),
+    ];
+}
+
+foreach ($utilizadas as $row) {
+    if (!$course = $DB->get_record('course', ['id' => $row->courseid], 'id, fullname', IGNORE_MISSING)) {
+        continue;
+    }
+    $courseswithrequests[$course->id] = true;
+    $utilizadasreport[] = [
+        'course' => $course->fullname,
+        'teachers' => local_versionamiento_de_aulas_get_course_teachers((int)$course->id),
+    ];
+}
+
+foreach ($solicitudes as $row) {
+    if (!$course = $DB->get_record('course', ['id' => $row->courseid], 'id, fullname', IGNORE_MISSING)) {
+        continue;
+    }
+    $courseswithrequests[$course->id] = true;
+    $pendientesreport[] = [
+        'course' => $course->fullname,
+        'teachers' => local_versionamiento_de_aulas_get_course_teachers((int)$course->id),
+    ];
+}
+
+$allcourses = $DB->get_records_sql("SELECT id, fullname FROM {course} WHERE id > 1 AND visible = 1");
+$periodcourses = [];
+foreach ($allcourses as $course) {
+    if (preg_match('/(20\d{2}-[1-2])-B[1-2]/i', $course->fullname)) {
+        $periodcourses[] = $course;
+    }
+}
+
+usort($periodcourses, static function($a, $b) {
+    return strcmp($b->fullname, $a->fullname);
+});
+
+$periodtotal = count($periodcourses);
+$pendingrequestreport = [];
+foreach ($periodcourses as $course) {
+    if (isset($courseswithrequests[$course->id])) {
+        continue;
+    }
+    $pendingrequestreport[] = [
+        'course' => $course->fullname,
+        'teachers' => local_versionamiento_de_aulas_get_course_teachers((int)$course->id),
+    ];
+}
+
+
+$exportreport = optional_param('export_report', '', PARAM_ALPHAEXT);
+if (!empty($exportreport)) {
+    $allowedreports = [
+        'finalizados' => $finalizadosreport,
+        'utilizadas' => $utilizadasreport,
+        'pendientes' => $pendientesreport,
+        'sin_solicitud' => $pendingrequestreport,
+    ];
+
+    if (!array_key_exists($exportreport, $allowedreports)) {
+        throw new moodle_exception('invalidparameter', 'error');
+    }
+
+    local_versionamiento_de_aulas_export_report_excel($exportreport, $allowedreports[$exportreport]);
+}
+
+echo $OUTPUT->header();
 
 echo "
 <style>
@@ -34,6 +182,7 @@ echo "
     .bg-pendientes { background: #fef1d8; border-left: 5px solid #f0ad4e; }
     .bg-archivos { background: #e7f3ff; border-left: 5px solid #007bff; }
     .bg-eventos { background: #eafaf1; border-left: 5px solid #28a745; }
+    .bg-total { background: #f4edff; border-left: 5px solid #6f42c1; }
     .filter-box { background: #f8f9fa; border-radius: 10px; padding: 20px; margin-bottom: 25px; border: 1px solid #eee; }
     .badge-fusion { background-color: #28a745; color: white; }
     .badge-pending { background-color: #ffc107; color: #856404; }
@@ -46,26 +195,52 @@ echo "
 
 <div class='container-fluid'>
     <div class='row mb-4'>
-        <div class='col-md-4'>
+        <div class='col-md-3'>
             <div class='card card-stats bg-archivos shadow-sm h-100 py-3 text-center'>
-                <div class='text-xs font-weight-bold text-primary text-uppercase mb-1 small'>RESGUARDOS EJECUTADOS</div>
-                <div class='h2 mb-0 font-weight-bold'>$archivos</div>
+                <div class='text-xs font-weight-bold text-primary text-uppercase mb-1 small'>RESPALDOS EJECUTADOS</div>
+                <div class='h2 mb-0 font-weight-bold'>{$archivos}</div>
             </div>
         </div>
-        <div class='col-md-4'>
+        <div class='col-md-3'>
             <div class='card card-stats bg-eventos shadow-sm h-100 py-3 text-center'>
                 <div class='text-xs font-weight-bold text-success text-uppercase mb-1 small'>AULAS REUTILIZADAS</div>
-                <div class='h2 mb-0 font-weight-bold'>$logs_count</div>
+                <div class='h2 mb-0 font-weight-bold'>{$logs_count}</div>
             </div>
         </div>
-        <div class='col-md-4'>
-            <a href='$url_cola' class='card card-stats bg-pendientes shadow-sm h-100 py-3 text-center'>
+        <div class='col-md-3'>
+            <a href='{$url_cola}' class='card card-stats bg-pendientes shadow-sm h-100 py-3 text-center'>
                 <div class='text-xs font-weight-bold text-warning text-uppercase mb-1 small'>SOLICITUDES PENDIENTES</div>
-                <div class='h2 mb-0 font-weight-bold'>$pendientes</div>
+                <div class='h2 mb-0 font-weight-bold'>{$pendientes}</div>
                 <small class='text-muted'>Ir a ejecución <i class='fa fa-arrow-right'></i></small>
             </a>
         </div>
+        <div class='col-md-3'>
+            <div class='card card-stats bg-total shadow-sm h-100 py-3 text-center'>
+                <div class='text-xs font-weight-bold text-uppercase mb-1 small'>TOTAL DE AULAS DEL PERIODO</div>
+                <div class='h2 mb-0 font-weight-bold'>{$periodtotal}</div>
+            </div>
+        </div>
     </div>";
+
+// --- Exportador de informes ---
+echo "
+<div class='card shadow-sm mb-4'>
+  <div class='card-body'>
+    <h5 class='mb-3'>Descargar reportes en Excel</h5>
+    <form method='get' action='{$PAGE->url}' class='form-inline'>
+      <label for='export_report' class='mr-2 font-weight-bold mb-2'>Seleccione reporte:</label>
+      <select id='export_report' name='export_report' class='form-control mr-2 mb-2' required>
+        <option value=''>-- Seleccione --</option>
+        <option value='finalizados'>RESPALDOS EJECUTADOS</option>
+        <option value='utilizadas'>AULAS UTILIZADAS</option>
+        <option value='pendientes'>SOLICITUDES PENDIENTES</option>
+        <option value='sin_solicitud'>TOTAL DE AULAS DEL PERIODO (PENDIENTES DE SOLICITUD)</option>
+      </select>
+      <button type='submit' class='btn btn-success mb-2'>Descargar Excel</button>
+    </form>
+  </div>
+</div>";
+
 
 // --- 2. FILTROS ---
 echo "
@@ -85,7 +260,6 @@ echo "
     </form>
 </div>";
 
-// --- 3. CLASE DE TABLA ---
 class versionamiento_admin_table extends table_sql {
     function col_timecreated($values) {
         return "<strong>".userdate($values->timecreated, '%d/%m/%Y')."</strong><br><small class='text-muted'>".userdate($values->timecreated, '%H:%M')." hrs</small>";
@@ -102,7 +276,9 @@ class versionamiento_admin_table extends table_sql {
             $names = [];
             foreach ($ids as $cid) {
                 $cname = $DB->get_field('course_categories', 'name', ['id' => $cid]);
-                if ($cname && !in_array(strtolower($cname), ['top', 'superior', 'system'])) $names[] = $cname;
+                if ($cname && !in_array(strtolower($cname), ['top', 'superior', 'system'])) {
+                    $names[] = $cname;
+                }
             }
             $full_path = implode(' > ', $names);
         }
@@ -120,14 +296,12 @@ class versionamiento_admin_table extends table_sql {
     }
 }
 
-// --- 4. CONFIGURACIÓN SQL (UNION PARA TIEMPO REAL) ---
 $table = new versionamiento_admin_table('local_ver_table_v3');
 $table->define_columns(['timecreated', 'userid', 'courseid', 'action']);
 $table->define_headers(['Fecha / Hora', 'Docente', 'Curso / Aula', 'Estado']);
 $table->sortable(true, 'timecreated', SORT_DESC);
 $table->set_attribute('class', 'table table-hover bg-white shadow-sm border');
 
-// Construimos el WHERE para los filtros
 $where = "1=1";
 $params = [];
 if (!empty($filter_user)) {
@@ -139,8 +313,7 @@ if (!empty($filter_action)) {
     $params['action'] = $filter_action;
 }
 
-// El campo "action" en la tabla de cola es el "status"
-$sql_fields = "combined.id, combined.timecreated, combined.userid, combined.courseid, combined.action, 
+$sql_fields = "combined.id, combined.timecreated, combined.userid, combined.courseid, combined.action,
                u.firstname, u.lastname, u.email,
                c.fullname AS coursefullname, c.category AS categoryid";
 
