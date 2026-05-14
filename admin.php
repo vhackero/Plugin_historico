@@ -132,7 +132,7 @@ foreach ($solicitudes as $row) {
     ];
 }
 
-$allcourses = $DB->get_records_sql("SELECT id, fullname FROM {course} WHERE id > 1");
+$allcourses = $DB->get_records_sql("SELECT id, fullname FROM {course} WHERE id > 1 AND visible = 1");
 $periodcourses = [];
 foreach ($allcourses as $course) {
     if (preg_match('/(20\d{2}-[1-2])-B[1-2]/i', $course->fullname)) {
